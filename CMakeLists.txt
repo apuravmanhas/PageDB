@@ -43,6 +43,7 @@ add_library(pagedb STATIC
   src/storage/page_guard.cpp
   src/storage/buffer_pool.cpp
   src/index/btree.cpp
+  src/db/database.cpp
 )
 target_include_directories(pagedb PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -70,4 +71,5 @@ if(PAGEDB_BUILD_TESTS)
   pagedb_add_unit_test(page_store_test tests/unit/page_store_test.cpp)
   pagedb_add_unit_test(buffer_pool_test tests/unit/buffer_pool_test.cpp)
   pagedb_add_unit_test(btree_test tests/unit/btree_test.cpp)
+  pagedb_add_unit_test(database_test tests/unit/database_test.cpp)
 endif()
