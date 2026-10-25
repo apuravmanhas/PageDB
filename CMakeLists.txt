@@ -34,6 +34,8 @@ endif()
 
 add_library(pagedb STATIC
   src/core/status.cpp
+  src/core/byte_codec.cpp
+  src/core/crc32c.cpp
 )
 target_include_directories(pagedb PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -46,8 +48,14 @@ target_link_libraries(pagedb_cli PRIVATE pagedb pagedb_warnings)
 if(PAGEDB_BUILD_TESTS)
   enable_testing()
 
-  add_executable(status_test tests/unit/status_test.cpp)
-  target_include_directories(status_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-  target_link_libraries(status_test PRIVATE pagedb pagedb_warnings)
-  add_test(NAME status_test COMMAND status_test)
+  function(pagedb_add_unit_test test_name test_src)
+    add_executable(${test_name} ${test_src})
+    target_include_directories(${test_name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+    target_link_libraries(${test_name} PRIVATE pagedb pagedb_warnings)
+    add_test(NAME ${test_name} COMMAND ${test_name})
+  endfunction()
+
+  pagedb_add_unit_test(status_test tests/unit/status_test.cpp)
+  pagedb_add_unit_test(byte_codec_test tests/unit/byte_codec_test.cpp)
+  pagedb_add_unit_test(crc32c_test tests/unit/crc32c_test.cpp)
 endif()
