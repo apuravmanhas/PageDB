@@ -2,6 +2,8 @@
 
 #include <utility>
 
+#include "pagedb/transaction.h"
+
 namespace pagedb {
 namespace {
 
@@ -106,28 +108,98 @@ void Database::abort_active_transaction() noexcept {
   pool_->discard_all_pages();
   store_->abort_transaction();
   allocator_->reload_superblock();
+  has_active_transaction_ = false;
 }
 
-Status Database::commit_active_transaction() {
+Result<std::unique_ptr<Transaction>> Database::begin_transaction() {
+  Status s = ensure_open();
+  if (!s.ok()) {
+    return s;
+  }
+  if (has_active_transaction_) {
+    return Status::AlreadyOpen(
+        "another transaction is already active on this database");
+  }
+
+  store_->begin_transaction();
+  has_active_transaction_ = true;
+  const TxnId txn_id = wal_->allocate_txn_id();
+  return Result<std::unique_ptr<Transaction>>::Ok(
+      std::make_unique<Transaction>(*this, txn_id));
+}
+
+Status Database::txn_put(std::span<const std::byte> key,
+                         std::span<const std::byte> value) {
+  Status s = ensure_open();
+  if (!s.ok()) {
+    return s;
+  }
+  if (!has_active_transaction_) {
+    return Status::InvalidArgument("no active transaction");
+  }
+  return tree_->put(key, value);
+}
+
+Result<std::string> Database::txn_get(std::span<const std::byte> key) {
+  Status s = ensure_open();
+  if (!s.ok()) {
+    return s;
+  }
+  if (!has_active_transaction_) {
+    return Status::InvalidArgument("no active transaction");
+  }
+  return tree_->get(key);
+}
+
+Result<bool> Database::txn_del(std::span<const std::byte> key) {
+  Status s = ensure_open();
+  if (!s.ok()) {
+    return s;
+  }
+  if (!has_active_transaction_) {
+    return Status::InvalidArgument("no active transaction");
+  }
+  return tree_->del(key);
+}
+
+Result<std::vector<KeyValue>> Database::txn_scan_bytes(
+    std::optional<std::span<const std::byte>> start_key,
+    std::optional<std::span<const std::byte>> end_key) {
+  Status s = ensure_open();
+  if (!s.ok()) {
+    return s;
+  }
+  if (!has_active_transaction_) {
+    return Status::InvalidArgument("no active transaction");
+  }
+  return tree_->scan_bytes(start_key, end_key);
+}
+
+Status Database::txn_commit(TxnId txn_id) {
+  Status s = ensure_open();
+  if (!s.ok()) {
+    return s;
+  }
+  if (!has_active_transaction_) {
+    return Status::InvalidArgument("no active transaction");
+  }
+
   Status flush_s = pool_->flush_dirty_pages();
   if (!flush_s.ok()) {
-    abort_active_transaction();
+    (void)txn_rollback(txn_id);
     return flush_s;
   }
 
   if (store_->staged_pages().empty()) {
     store_->abort_transaction();
+    has_active_transaction_ = false;
     return Status::Ok();
   }
 
-  // Ensure PageId(0) (Superblock) is included in every committing transaction's
-  // WAL write-set so that Superblock::page_lsn advances monotonically and a
-  // torn Page 0 can always be repaired from pagedb.wal even before the first
-  // B+ tree split.
   if (!store_->staged_pages().contains(kSuperblockPageId)) {
     Status sb_s = allocator_->flush_superblock();
     if (!sb_s.ok()) {
-      abort_active_transaction();
+      (void)txn_rollback(txn_id);
       return sb_s;
     }
   }
@@ -135,7 +207,6 @@ Status Database::commit_active_transaction() {
   const std::uint64_t txn_wal_offset = wal_->write_offset();
   const Lsn txn_start_lsn = wal_->peek_next_lsn();
   const Lsn prev_max_committed_lsn = wal_->max_committed_lsn();
-  const TxnId txn_id = wal_->allocate_txn_id();
 
   auto rollback_wal_and_txn = [&]() noexcept {
     wal_->discard_unsynced_from(txn_wal_offset, txn_start_lsn, txn_id,
@@ -169,8 +240,6 @@ Status Database::commit_active_transaction() {
     return commit_res.status();
   }
 
-  // Durable commit point (Invariants W-2, W-3): synchronize WAL before any
-  // staged page image is installed into pagedb.data.
   Status wal_sync_s = wal_->sync();
   if (!wal_sync_s.ok()) {
     rollback_wal_and_txn();
@@ -182,6 +251,16 @@ Status Database::commit_active_transaction() {
     return install_s;
   }
   allocator_->reload_superblock();
+  has_active_transaction_ = false;
+  return Status::Ok();
+}
+
+Status Database::txn_rollback(TxnId txn_id) noexcept {
+  (void)txn_id;
+  if (!has_active_transaction_) {
+    return Status::Ok();
+  }
+  abort_active_transaction();
   return Status::Ok();
 }
 
@@ -191,14 +270,21 @@ Status Database::put(std::span<const std::byte> key,
   if (!s.ok()) {
     return s;
   }
-
-  store_->begin_transaction();
-  Status op_s = tree_->put(key, value);
-  if (!op_s.ok()) {
-    abort_active_transaction();
-    return op_s;
+  if (has_active_transaction_) {
+    return Status::AlreadyOpen(
+        "cannot perform auto-commit operation while transaction is active");
   }
-  return commit_active_transaction();
+
+  auto txn_res = begin_transaction();
+  if (!txn_res.ok()) {
+    return txn_res.status();
+  }
+  auto& txn = *txn_res.value();
+  Status put_s = txn.put(key, value);
+  if (!put_s.ok()) {
+    return put_s;
+  }
+  return txn.commit();
 }
 
 Status Database::put(std::string_view key, std::string_view value) {
@@ -214,6 +300,10 @@ Result<std::string> Database::get(std::span<const std::byte> key) {
   if (!s.ok()) {
     return s;
   }
+  if (has_active_transaction_) {
+    return Status::AlreadyOpen(
+        "cannot perform auto-commit get while transaction is active");
+  }
   return tree_->get(key);
 }
 
@@ -221,6 +311,10 @@ Result<std::string> Database::get(std::string_view key) {
   Status s = ensure_open();
   if (!s.ok()) {
     return s;
+  }
+  if (has_active_transaction_) {
+    return Status::AlreadyOpen(
+        "cannot perform auto-commit get while transaction is active");
   }
   return tree_->get(key);
 }
@@ -230,14 +324,21 @@ Result<bool> Database::del(std::span<const std::byte> key) {
   if (!s.ok()) {
     return s;
   }
-
-  store_->begin_transaction();
-  auto del_res = tree_->del(key);
-  if (!del_res.ok()) {
-    abort_active_transaction();
-    return del_res.status();
+  if (has_active_transaction_) {
+    return Status::AlreadyOpen(
+        "cannot perform auto-commit del while transaction is active");
   }
-  Status commit_s = commit_active_transaction();
+
+  auto txn_res = begin_transaction();
+  if (!txn_res.ok()) {
+    return txn_res.status();
+  }
+  auto& txn = *txn_res.value();
+  auto del_res = txn.del(key);
+  if (!del_res.ok()) {
+    return del_res;
+  }
+  Status commit_s = txn.commit();
   if (!commit_s.ok()) {
     return commit_s;
   }
@@ -257,6 +358,10 @@ Result<std::vector<KeyValue>> Database::scan(
   if (!s.ok()) {
     return s;
   }
+  if (has_active_transaction_) {
+    return Status::AlreadyOpen(
+        "cannot perform auto-commit scan while transaction is active");
+  }
   return tree_->scan(start_key, end_key);
 }
 
@@ -266,6 +371,10 @@ Result<std::vector<KeyValue>> Database::scan_bytes(
   Status s = ensure_open();
   if (!s.ok()) {
     return s;
+  }
+  if (has_active_transaction_) {
+    return Status::AlreadyOpen(
+        "cannot perform auto-commit scan while transaction is active");
   }
   return tree_->scan_bytes(start_key, end_key);
 }
@@ -294,6 +403,9 @@ Status Database::sync() {
 Status Database::close() noexcept {
   if (!is_open_) {
     return Status::Ok();
+  }
+  if (has_active_transaction_) {
+    abort_active_transaction();
   }
   Status flush_s = Status::Ok();
   if (!store_->is_poisoned()) {

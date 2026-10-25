@@ -45,6 +45,7 @@ add_library(pagedb STATIC
   src/storage/wal.cpp
   src/index/btree.cpp
   src/db/database.cpp
+  src/db/transaction.cpp
 )
 target_include_directories(pagedb PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -74,4 +75,5 @@ if(PAGEDB_BUILD_TESTS)
   pagedb_add_unit_test(btree_test tests/unit/btree_test.cpp)
   pagedb_add_unit_test(database_test tests/unit/database_test.cpp)
   pagedb_add_unit_test(wal_test tests/unit/wal_test.cpp)
+  pagedb_add_unit_test(transaction_test tests/unit/transaction_test.cpp)
 endif()
