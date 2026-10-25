@@ -113,6 +113,7 @@ void Database::abort_active_transaction() noexcept {
 }
 
 Result<std::unique_ptr<Transaction>> Database::begin_transaction() {
+  std::unique_lock<std::shared_mutex> lock(db_rwlock_);
   Status s = ensure_open();
   if (!s.ok()) {
     return s;
@@ -131,6 +132,7 @@ Result<std::unique_ptr<Transaction>> Database::begin_transaction() {
 
 Status Database::txn_put(std::span<const std::byte> key,
                          std::span<const std::byte> value) {
+  std::unique_lock<std::shared_mutex> lock(db_rwlock_);
   Status s = ensure_open();
   if (!s.ok()) {
     return s;
@@ -142,6 +144,7 @@ Status Database::txn_put(std::span<const std::byte> key,
 }
 
 Result<std::string> Database::txn_get(std::span<const std::byte> key) {
+  std::unique_lock<std::shared_mutex> lock(db_rwlock_);
   Status s = ensure_open();
   if (!s.ok()) {
     return s;
@@ -153,6 +156,7 @@ Result<std::string> Database::txn_get(std::span<const std::byte> key) {
 }
 
 Result<bool> Database::txn_del(std::span<const std::byte> key) {
+  std::unique_lock<std::shared_mutex> lock(db_rwlock_);
   Status s = ensure_open();
   if (!s.ok()) {
     return s;
@@ -166,6 +170,7 @@ Result<bool> Database::txn_del(std::span<const std::byte> key) {
 Result<std::vector<KeyValue>> Database::txn_scan_bytes(
     std::optional<std::span<const std::byte>> start_key,
     std::optional<std::span<const std::byte>> end_key) {
+  std::unique_lock<std::shared_mutex> lock(db_rwlock_);
   Status s = ensure_open();
   if (!s.ok()) {
     return s;
@@ -176,18 +181,14 @@ Result<std::vector<KeyValue>> Database::txn_scan_bytes(
   return tree_->scan_bytes(start_key, end_key);
 }
 
-Status Database::txn_commit(TxnId txn_id) {
-  Status s = ensure_open();
-  if (!s.ok()) {
-    return s;
-  }
+Status Database::commit_active_transaction(TxnId txn_id) {
   if (!has_active_transaction_) {
     return Status::InvalidArgument("no active transaction");
   }
 
   Status flush_s = pool_->flush_dirty_pages();
   if (!flush_s.ok()) {
-    (void)txn_rollback(txn_id);
+    abort_active_transaction();
     return flush_s;
   }
 
@@ -200,7 +201,7 @@ Status Database::txn_commit(TxnId txn_id) {
   if (!store_->staged_pages().contains(kSuperblockPageId)) {
     Status sb_s = allocator_->flush_superblock();
     if (!sb_s.ok()) {
-      (void)txn_rollback(txn_id);
+      abort_active_transaction();
       return sb_s;
     }
   }
@@ -256,13 +257,23 @@ Status Database::txn_commit(TxnId txn_id) {
 
   if (options_.wal_auto_checkpoint_bytes > 0 &&
       wal_->write_offset() >= options_.wal_auto_checkpoint_bytes) {
-    (void)checkpoint();
+    (void)checkpoint_internal();
   }
 
   return Status::Ok();
 }
 
+Status Database::txn_commit(TxnId txn_id) {
+  std::unique_lock<std::shared_mutex> lock(db_rwlock_);
+  Status s = ensure_open();
+  if (!s.ok()) {
+    return s;
+  }
+  return commit_active_transaction(txn_id);
+}
+
 Status Database::txn_rollback(TxnId txn_id) noexcept {
+  std::unique_lock<std::shared_mutex> lock(db_rwlock_);
   (void)txn_id;
   if (!has_active_transaction_) {
     return Status::Ok();
@@ -273,6 +284,7 @@ Status Database::txn_rollback(TxnId txn_id) noexcept {
 
 Status Database::put(std::span<const std::byte> key,
                      std::span<const std::byte> value) {
+  std::unique_lock<std::shared_mutex> lock(db_rwlock_);
   Status s = ensure_open();
   if (!s.ok()) {
     return s;
@@ -282,16 +294,15 @@ Status Database::put(std::span<const std::byte> key,
         "cannot perform auto-commit operation while transaction is active");
   }
 
-  auto txn_res = begin_transaction();
-  if (!txn_res.ok()) {
-    return txn_res.status();
+  store_->begin_transaction();
+  has_active_transaction_ = true;
+  const TxnId txn_id = wal_->allocate_txn_id();
+  Status op_s = tree_->put(key, value);
+  if (!op_s.ok()) {
+    abort_active_transaction();
+    return op_s;
   }
-  auto& txn = *txn_res.value();
-  Status put_s = txn.put(key, value);
-  if (!put_s.ok()) {
-    return put_s;
-  }
-  return txn.commit();
+  return commit_active_transaction(txn_id);
 }
 
 Status Database::put(std::string_view key, std::string_view value) {
@@ -303,6 +314,7 @@ Status Database::put(std::string_view key, std::string_view value) {
 }
 
 Result<std::string> Database::get(std::span<const std::byte> key) {
+  std::shared_lock<std::shared_mutex> lock(db_rwlock_);
   Status s = ensure_open();
   if (!s.ok()) {
     return s;
@@ -315,18 +327,13 @@ Result<std::string> Database::get(std::span<const std::byte> key) {
 }
 
 Result<std::string> Database::get(std::string_view key) {
-  Status s = ensure_open();
-  if (!s.ok()) {
-    return s;
-  }
-  if (has_active_transaction_) {
-    return Status::AlreadyOpen(
-        "cannot perform auto-commit get while transaction is active");
-  }
-  return tree_->get(key);
+  const std::span<const std::byte> k(
+      reinterpret_cast<const std::byte*>(key.data()), key.size());
+  return get(k);
 }
 
 Result<bool> Database::del(std::span<const std::byte> key) {
+  std::unique_lock<std::shared_mutex> lock(db_rwlock_);
   Status s = ensure_open();
   if (!s.ok()) {
     return s;
@@ -336,16 +343,15 @@ Result<bool> Database::del(std::span<const std::byte> key) {
         "cannot perform auto-commit del while transaction is active");
   }
 
-  auto txn_res = begin_transaction();
-  if (!txn_res.ok()) {
-    return txn_res.status();
-  }
-  auto& txn = *txn_res.value();
-  auto del_res = txn.del(key);
+  store_->begin_transaction();
+  has_active_transaction_ = true;
+  const TxnId txn_id = wal_->allocate_txn_id();
+  auto del_res = tree_->del(key);
   if (!del_res.ok()) {
-    return del_res;
+    abort_active_transaction();
+    return del_res.status();
   }
-  Status commit_s = txn.commit();
+  Status commit_s = commit_active_transaction(txn_id);
   if (!commit_s.ok()) {
     return commit_s;
   }
@@ -361,20 +367,23 @@ Result<bool> Database::del(std::string_view key) {
 Result<std::vector<KeyValue>> Database::scan(
     std::optional<std::string_view> start_key,
     std::optional<std::string_view> end_key) {
-  Status s = ensure_open();
-  if (!s.ok()) {
-    return s;
+  std::optional<std::span<const std::byte>> start_bytes;
+  std::optional<std::span<const std::byte>> end_bytes;
+  if (start_key.has_value()) {
+    start_bytes = std::as_bytes(
+        std::span<const char>(start_key->data(), start_key->size()));
   }
-  if (has_active_transaction_) {
-    return Status::AlreadyOpen(
-        "cannot perform auto-commit scan while transaction is active");
+  if (end_key.has_value()) {
+    end_bytes =
+        std::as_bytes(std::span<const char>(end_key->data(), end_key->size()));
   }
-  return tree_->scan(start_key, end_key);
+  return scan_bytes(start_bytes, end_bytes);
 }
 
 Result<std::vector<KeyValue>> Database::scan_bytes(
     std::optional<std::span<const std::byte>> start_key,
     std::optional<std::span<const std::byte>> end_key) {
+  std::shared_lock<std::shared_mutex> lock(db_rwlock_);
   Status s = ensure_open();
   if (!s.ok()) {
     return s;
@@ -387,6 +396,7 @@ Result<std::vector<KeyValue>> Database::scan_bytes(
 }
 
 Status Database::verify() const {
+  std::shared_lock<std::shared_mutex> lock(db_rwlock_);
   Status s = ensure_open();
   if (!s.ok()) {
     return s;
@@ -395,6 +405,7 @@ Status Database::verify() const {
 }
 
 Status Database::sync() {
+  std::unique_lock<std::shared_mutex> lock(db_rwlock_);
   Status s = ensure_open();
   if (!s.ok()) {
     return s;
@@ -407,16 +418,7 @@ Status Database::sync() {
   return pool_->flush_all();
 }
 
-Status Database::checkpoint() {
-  Status s = ensure_open();
-  if (!s.ok()) {
-    return s;
-  }
-  if (has_active_transaction_) {
-    return Status::AlreadyOpen(
-        "cannot perform checkpoint while a transaction is active");
-  }
-
+Status Database::checkpoint_internal() {
   // Phase 1: Flush all dirty buffer pool frames into PageStore.
   Status flush_s = pool_->flush_dirty_pages();
   if (!flush_s.ok()) {
@@ -469,7 +471,21 @@ Status Database::checkpoint() {
   return Status::Ok();
 }
 
+Status Database::checkpoint() {
+  std::unique_lock<std::shared_mutex> lock(db_rwlock_);
+  Status s = ensure_open();
+  if (!s.ok()) {
+    return s;
+  }
+  if (has_active_transaction_) {
+    return Status::AlreadyOpen(
+        "cannot perform checkpoint while a transaction is active");
+  }
+  return checkpoint_internal();
+}
+
 Status Database::close() noexcept {
+  std::unique_lock<std::shared_mutex> lock(db_rwlock_);
   if (!is_open_) {
     return Status::Ok();
   }
@@ -498,6 +514,7 @@ Status Database::close() noexcept {
 }
 
 Result<std::uint32_t> Database::tree_height() const {
+  std::shared_lock<std::shared_mutex> lock(db_rwlock_);
   Status s = ensure_open();
   if (!s.ok()) {
     return s;
@@ -506,26 +523,32 @@ Result<std::uint32_t> Database::tree_height() const {
 }
 
 std::uint32_t Database::page_count() const noexcept {
+  std::shared_lock<std::shared_mutex> lock(db_rwlock_);
   return is_open_ ? store_->page_count() : 0U;
 }
 
 PageId Database::root_page_id() const noexcept {
+  std::shared_lock<std::shared_mutex> lock(db_rwlock_);
   return is_open_ ? allocator_->root_page_id() : kInvalidPageId;
 }
 
 PageId Database::free_list_head() const noexcept {
+  std::shared_lock<std::shared_mutex> lock(db_rwlock_);
   return is_open_ ? allocator_->free_list_head() : kInvalidPageId;
 }
 
 Lsn Database::max_committed_lsn() const noexcept {
+  std::shared_lock<std::shared_mutex> lock(db_rwlock_);
   return (is_open_ && wal_) ? wal_->max_committed_lsn() : kInvalidLsn;
 }
 
 Lsn Database::checkpoint_lsn() const noexcept {
+  std::shared_lock<std::shared_mutex> lock(db_rwlock_);
   return is_open_ ? store_->superblock().checkpoint_lsn : kInvalidLsn;
 }
 
 Result<std::uint64_t> Database::wal_size_bytes() const {
+  std::shared_lock<std::shared_mutex> lock(db_rwlock_);
   Status s = ensure_open();
   if (!s.ok()) {
     return s;
@@ -534,6 +557,7 @@ Result<std::uint64_t> Database::wal_size_bytes() const {
 }
 
 BufferPoolStats Database::buffer_pool_stats() const noexcept {
+  std::shared_lock<std::shared_mutex> lock(db_rwlock_);
   return is_open_ ? pool_->stats() : BufferPoolStats{};
 }
 

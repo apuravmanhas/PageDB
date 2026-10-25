@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <memory>
 #include <optional>
+#include <shared_mutex>
 #include <span>
 #include <string>
 #include <string_view>
@@ -93,8 +94,9 @@ class Database {
   friend class Transaction;
 
   [[nodiscard]] Status ensure_open() const noexcept;
-  [[nodiscard]] Status commit_active_transaction();
+  [[nodiscard]] Status commit_active_transaction(TxnId txn_id);
   void abort_active_transaction() noexcept;
+  [[nodiscard]] Status checkpoint_internal();
 
   [[nodiscard]] Status txn_put(std::span<const std::byte> key,
                                std::span<const std::byte> value);
@@ -114,6 +116,7 @@ class Database {
   DatabaseOptions options_{};
   bool is_open_{false};
   bool has_active_transaction_{false};
+  mutable std::shared_mutex db_rwlock_{};
 };
 
 }  // namespace pagedb

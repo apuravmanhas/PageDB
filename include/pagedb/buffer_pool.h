@@ -1,7 +1,9 @@
 #pragma once
 
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <mutex>
 #include <span>
 #include <unordered_map>
 #include <vector>
@@ -56,15 +58,11 @@ class BufferPool {
   [[nodiscard]] Status flush_all();
 
   [[nodiscard]] std::size_t capacity() const noexcept { return frames_.size(); }
-  [[nodiscard]] std::size_t resident_count() const noexcept {
-    return page_table_.size();
-  }
+  [[nodiscard]] std::size_t resident_count() const noexcept;
   [[nodiscard]] std::uint32_t pin_count(PageId page_id) const noexcept;
   [[nodiscard]] bool is_dirty(PageId page_id) const noexcept;
-  [[nodiscard]] bool is_resident(PageId page_id) const noexcept {
-    return page_table_.find(page_id) != page_table_.end();
-  }
-  [[nodiscard]] const BufferPoolStats& stats() const noexcept { return stats_; }
+  [[nodiscard]] bool is_resident(PageId page_id) const noexcept;
+  [[nodiscard]] BufferPoolStats stats() const noexcept;
 
   // Debug invariant checker for frame table and pin counts.
   [[nodiscard]] Status verify_invariants() const noexcept;
@@ -99,6 +97,8 @@ class BufferPool {
   std::unordered_map<PageId, std::size_t, PageIdHash> page_table_;
   std::size_t clock_hand_{0};
   BufferPoolStats stats_{};
+  mutable std::mutex mutex_{};
+  std::condition_variable cv_{};
 };
 
 }  // namespace pagedb

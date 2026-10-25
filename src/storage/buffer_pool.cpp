@@ -31,6 +31,8 @@ Result<PageGuard> BufferPool::fetch_page(PageId page_id) {
     return Status::InvalidArgument("fetch_page PageId out of allocated range");
   }
 
+  std::unique_lock<std::mutex> lock(mutex_);
+
   // 1. Check if page is already resident in the buffer pool.
   auto it = page_table_.find(page_id);
   if (it != page_table_.end()) {
@@ -46,8 +48,38 @@ Result<PageGuard> BufferPool::fetch_page(PageId page_id) {
   // 2. Cache miss: locate a free or evictable frame via CLOCK.
   auto victim_res = find_victim_frame();
   if (!victim_res.ok()) {
-    ++stats_.pin_failures;
-    return victim_res.status();
+    // If all frames are currently pinned, wait for a frame to become unpinned.
+    const bool acquired = cv_.wait_for(lock, std::chrono::seconds(2), [&]() {
+      for (const Frame& f : frames_) {
+        if (f.pin_count == 0) {
+          return true;
+        }
+      }
+      return false;
+    });
+    if (!acquired) {
+      ++stats_.pin_failures;
+      return Status::ResourceExhausted(
+          "all buffer pool frames are currently pinned");
+    }
+
+    // Double check if page was brought into cache while waiting.
+    auto recheck_it = page_table_.find(page_id);
+    if (recheck_it != page_table_.end()) {
+      const std::size_t r_idx = recheck_it->second;
+      Frame& r_frame = frames_[r_idx];
+      assert(r_frame.page_id == page_id);
+      ++r_frame.pin_count;
+      r_frame.ref_bit = true;
+      ++stats_.hits;
+      return Result<PageGuard>::Ok(PageGuard(this, r_idx, page_id));
+    }
+
+    victim_res = find_victim_frame();
+    if (!victim_res.ok()) {
+      ++stats_.pin_failures;
+      return victim_res.status();
+    }
   }
   const std::size_t idx = victim_res.value();
   Frame& frame = frames_[idx];
@@ -122,6 +154,7 @@ Result<std::size_t> BufferPool::find_victim_frame() {
 }
 
 Status BufferPool::flush_page(PageId page_id) {
+  std::lock_guard<std::mutex> lock(mutex_);
   auto it = page_table_.find(page_id);
   if (it == page_table_.end()) {
     return Status::Ok();
@@ -140,6 +173,7 @@ Status BufferPool::flush_page(PageId page_id) {
 }
 
 Status BufferPool::discard_page(PageId page_id) noexcept {
+  std::lock_guard<std::mutex> lock(mutex_);
   auto it = page_table_.find(page_id);
   if (it == page_table_.end()) {
     return Status::Ok();
@@ -153,10 +187,12 @@ Status BufferPool::discard_page(PageId page_id) noexcept {
   frame.is_dirty = false;
   frame.ref_bit = false;
   page_table_.erase(it);
+  cv_.notify_all();
   return Status::Ok();
 }
 
 void BufferPool::discard_all_pages() noexcept {
+  std::lock_guard<std::mutex> lock(mutex_);
   for (Frame& frame : frames_) {
     assert(frame.pin_count == 0);
     frame.data.fill(std::byte{0});
@@ -165,9 +201,11 @@ void BufferPool::discard_all_pages() noexcept {
     frame.ref_bit = false;
   }
   page_table_.clear();
+  cv_.notify_all();
 }
 
 Status BufferPool::flush_dirty_pages() {
+  std::lock_guard<std::mutex> lock(mutex_);
   for (Frame& frame : frames_) {
     if (frame.page_id.is_valid() && frame.is_dirty) {
       Status ws = store_.write_page(frame.page_id, frame.data);
@@ -183,6 +221,7 @@ Status BufferPool::flush_dirty_pages() {
 
 void BufferPool::update_resident_frame(
     PageId page_id, std::span<const std::byte, kPageSize> image) noexcept {
+  std::lock_guard<std::mutex> lock(mutex_);
   auto it = page_table_.find(page_id);
   if (it == page_table_.end()) {
     return;
@@ -201,7 +240,13 @@ Status BufferPool::flush_all() {
   return store_.sync();
 }
 
+std::size_t BufferPool::resident_count() const noexcept {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return page_table_.size();
+}
+
 std::uint32_t BufferPool::pin_count(PageId page_id) const noexcept {
+  std::lock_guard<std::mutex> lock(mutex_);
   auto it = page_table_.find(page_id);
   if (it == page_table_.end()) {
     return 0;
@@ -210,6 +255,7 @@ std::uint32_t BufferPool::pin_count(PageId page_id) const noexcept {
 }
 
 bool BufferPool::is_dirty(PageId page_id) const noexcept {
+  std::lock_guard<std::mutex> lock(mutex_);
   auto it = page_table_.find(page_id);
   if (it == page_table_.end()) {
     return false;
@@ -217,7 +263,18 @@ bool BufferPool::is_dirty(PageId page_id) const noexcept {
   return frames_[it->second].is_dirty;
 }
 
+bool BufferPool::is_resident(PageId page_id) const noexcept {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return page_table_.find(page_id) != page_table_.end();
+}
+
+BufferPoolStats BufferPool::stats() const noexcept {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return stats_;
+}
+
 Status BufferPool::verify_invariants() const noexcept {
+  std::lock_guard<std::mutex> lock(mutex_);
   std::size_t valid_frames = 0;
   for (std::size_t i = 0; i < frames_.size(); ++i) {
     const Frame& f = frames_[i];
@@ -257,6 +314,7 @@ std::span<std::byte, kPageSize> BufferPool::frame_mutable_bytes(
 }
 
 void BufferPool::mark_frame_dirty(std::size_t frame_index) noexcept {
+  std::lock_guard<std::mutex> lock(mutex_);
   assert(frame_index < frames_.size());
   assert(frames_[frame_index].pin_count > 0);
   frames_[frame_index].is_dirty = true;
@@ -264,11 +322,15 @@ void BufferPool::mark_frame_dirty(std::size_t frame_index) noexcept {
 
 void BufferPool::unpin_frame(std::size_t frame_index,
                              PageId expected_id) noexcept {
+  std::lock_guard<std::mutex> lock(mutex_);
   assert(frame_index < frames_.size());
   Frame& frame = frames_[frame_index];
   assert(frame.page_id == expected_id);
   assert(frame.pin_count > 0);
   --frame.pin_count;
+  if (frame.pin_count == 0) {
+    cv_.notify_all();
+  }
 }
 
 }  // namespace pagedb
