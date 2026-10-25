@@ -36,6 +36,7 @@ add_library(pagedb STATIC
   src/core/status.cpp
   src/core/byte_codec.cpp
   src/core/crc32c.cpp
+  src/storage/file_handle.cpp
 )
 target_include_directories(pagedb PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -58,4 +59,5 @@ if(PAGEDB_BUILD_TESTS)
   pagedb_add_unit_test(status_test tests/unit/status_test.cpp)
   pagedb_add_unit_test(byte_codec_test tests/unit/byte_codec_test.cpp)
   pagedb_add_unit_test(crc32c_test tests/unit/crc32c_test.cpp)
+  pagedb_add_unit_test(file_handle_test tests/unit/file_handle_test.cpp)
 endif()

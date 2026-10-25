@@ -1,12 +1,47 @@
 #pragma once
 
+#include <unistd.h>
+
+#include <atomic>
 #include <cstdlib>
+#include <filesystem>
 #include <functional>
 #include <iostream>
 #include <string>
 #include <vector>
 
 namespace pagedb::test {
+
+class TempDir {
+ public:
+  explicit TempDir(std::string_view prefix = "pagedb_test") {
+    static std::atomic<std::uint64_t> counter{0};
+    const auto id = counter.fetch_add(1);
+    std::string dir_name(prefix);
+    dir_name.append("_");
+    dir_name.append(std::to_string(::getpid()));
+    dir_name.append("_");
+    dir_name.append(std::to_string(id));
+    path_ = std::filesystem::path("/tmp") / dir_name;
+    std::filesystem::remove_all(path_);
+    std::filesystem::create_directories(path_);
+  }
+
+  ~TempDir() {
+    std::error_code ec;
+    std::filesystem::remove_all(path_, ec);
+  }
+
+  TempDir(const TempDir&) = delete;
+  TempDir& operator=(const TempDir&) = delete;
+
+  [[nodiscard]] const std::filesystem::path& path() const noexcept {
+    return path_;
+  }
+
+ private:
+  std::filesystem::path path_;
+};
 
 struct TestCase {
   std::string name;
