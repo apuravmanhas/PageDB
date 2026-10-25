@@ -25,7 +25,7 @@ struct BufferPoolStats {
 class BufferPool {
  public:
   BufferPool(PageStore& store, std::size_t capacity_frames);
-  ~BufferPool() noexcept = default;
+  ~BufferPool() noexcept;
 
   BufferPool(const BufferPool&) = delete;
   BufferPool& operator=(const BufferPool&) = delete;

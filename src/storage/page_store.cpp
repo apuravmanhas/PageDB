@@ -2,32 +2,122 @@
 
 #include <filesystem>
 #include <limits>
+#include <string>
 #include <utility>
 
 #include "pagedb/byte_codec.h"
 
 namespace pagedb {
+namespace {
+
+constexpr const char* kDataFileName = "pagedb.data";
+constexpr const char* kDataTempFileName = "pagedb.data.tmp";
+constexpr const char* kLockFileName = "pagedb.lock";
+
+Status write_initial_pages(const std::filesystem::path& tmp_path,
+                           const PosixIoOps* ops) {
+  Superblock sb{};
+  sb.root_page_id = kInitialRootPageId;
+  sb.next_page_id = PageId(2);
+  sb.free_list_head = kInvalidPageId;
+  sb.checkpoint_lsn = kInvalidLsn;
+  sb.page_lsn = kInvalidLsn;
+
+  PageBuffer page0{};
+  Status s = PageCodec::encode_superblock(sb, page0);
+  if (!s.ok()) {
+    return s;
+  }
+
+  SlottedPage root_leaf;
+  s = root_leaf.init(kInitialRootPageId, PageType::kLeaf);
+  if (!s.ok()) {
+    return s;
+  }
+  PageBuffer page1{};
+  s = root_leaf.encode(page1);
+  if (!s.ok()) {
+    return s;
+  }
+
+  auto fh_res = FileHandle::open(tmp_path, OpenMode::kCreateNew, ops);
+  if (!fh_res.ok()) {
+    return fh_res.status();
+  }
+  FileHandle& fh = fh_res.value();
+  s = fh.write_exact_at(0, page0);
+  if (!s.ok()) {
+    return s;
+  }
+  s = fh.write_exact_at(kPageSize, page1);
+  if (!s.ok()) {
+    return s;
+  }
+  s = fh.sync_data();
+  if (!s.ok()) {
+    return s;
+  }
+  return fh.close();
+}
+
+// Creates pagedb.data atomically: the two initial pages are written and synced
+// into pagedb.data.tmp, which is then renamed into place and the directory is
+// synced. A failure or crash at any point leaves either no pagedb.data at all
+// or a complete one, never a truncated file that blocks every later open.
+// Caller must hold the database lock, which makes removing a stale temp file
+// safe.
+Status create_data_file_atomically(const std::filesystem::path& db_dir,
+                                   const PosixIoOps* ops) {
+  const auto data_path = db_dir / kDataFileName;
+  const auto tmp_path = db_dir / kDataTempFileName;
+
+  std::error_code ec;
+  std::filesystem::remove(tmp_path, ec);
+  if (ec) {
+    return Status::IoError("failed to remove stale " +
+                           std::string(kDataTempFileName) + ": " +
+                           ec.message());
+  }
+
+  Status s = write_initial_pages(tmp_path, ops);
+  if (!s.ok()) {
+    std::error_code rm_ec;
+    std::filesystem::remove(tmp_path, rm_ec);
+    return s;
+  }
+
+  std::filesystem::rename(tmp_path, data_path, ec);
+  if (ec) {
+    std::error_code rm_ec;
+    std::filesystem::remove(tmp_path, rm_ec);
+    return Status::IoError("failed to rename initial data file: " +
+                           ec.message());
+  }
+  return FileHandle::sync_directory(db_dir);
+}
+
+}  // namespace
 
 Result<std::unique_ptr<PageStore>> PageStore::open(
     const std::filesystem::path& db_dir, const PageStoreOptions& options) {
-  const auto data_path = db_dir / "pagedb.data";
-  const auto lock_path = db_dir / "pagedb.lock";
+  if (options.io_ops == nullptr) {
+    return Status::InvalidArgument("PageStoreOptions::io_ops must not be null");
+  }
+  const auto data_path = db_dir / kDataFileName;
+  const auto lock_path = db_dir / kLockFileName;
 
   std::error_code ec;
   const bool dir_exists = std::filesystem::exists(db_dir, ec);
-  if (!dir_exists) {
-    if (!options.create_if_missing) {
-      return Status::NotFound("database directory does not exist");
-    }
-    Status dir_s = FileHandle::ensure_directory_0700(db_dir);
-    if (!dir_s.ok()) {
-      return dir_s;
-    }
-  } else {
-    Status dir_s = FileHandle::ensure_directory_0700(db_dir);
-    if (!dir_s.ok()) {
-      return dir_s;
-    }
+  if (ec) {
+    return Status::IoError("failed to stat database directory: " +
+                           ec.message());
+  }
+  if (!dir_exists && !options.create_if_missing) {
+    return Status::NotFound("database directory does not exist");
+  }
+  Status dir_s = FileHandle::ensure_directory_0700(db_dir);
+  if (!dir_s.ok()) {
+    return dir_s;
   }
 
   auto lock_res = DatabaseLock::acquire(lock_path);
@@ -36,6 +126,9 @@ Result<std::unique_ptr<PageStore>> PageStore::open(
   }
 
   const bool data_exists = std::filesystem::exists(data_path, ec);
+  if (ec) {
+    return Status::IoError("failed to stat pagedb.data: " + ec.message());
+  }
   if (data_exists && options.error_if_exists) {
     return Status::AlreadyExists("database file already exists");
   }
@@ -43,9 +136,14 @@ Result<std::unique_ptr<PageStore>> PageStore::open(
     return Status::NotFound("pagedb.data does not exist");
   }
 
-  const OpenMode open_mode =
-      data_exists ? OpenMode::kReadWrite : OpenMode::kCreateNew;
-  auto fh_res = FileHandle::open(data_path, open_mode, options.io_ops);
+  if (!data_exists) {
+    Status init_s = create_data_file_atomically(db_dir, options.io_ops);
+    if (!init_s.ok()) {
+      return init_s;
+    }
+  }
+
+  auto fh_res = FileHandle::open(data_path, OpenMode::kReadWrite, options.io_ops);
   if (!fh_res.ok()) {
     return fh_res.status();
   }
@@ -60,54 +158,6 @@ Result<std::unique_ptr<PageStore>> PageStore::open(
     return file_size_res.status();
   }
   const std::uint64_t file_size = file_size_res.value();
-
-  if (!data_exists) {
-    // Initialize Page 0 (Superblock) and Page 1 (empty root Leaf).
-    Superblock sb{};
-    sb.root_page_id = kInitialRootPageId;
-    sb.next_page_id = PageId(2);
-    sb.free_list_head = kInvalidPageId;
-    sb.checkpoint_lsn = kInvalidLsn;
-    sb.page_lsn = kInvalidLsn;
-
-    PageBuffer page0{};
-    Status s0 = PageCodec::encode_superblock(sb, page0);
-    if (!s0.ok()) {
-      return s0;
-    }
-
-    SlottedPage root_leaf;
-    Status s1 = root_leaf.init(kInitialRootPageId, PageType::kLeaf);
-    if (!s1.ok()) {
-      return s1;
-    }
-    PageBuffer page1{};
-    s1 = root_leaf.encode(page1);
-    if (!s1.ok()) {
-      return s1;
-    }
-
-    Status w0 = store->data_file_.write_exact_at(0, page0);
-    if (!w0.ok()) {
-      return w0;
-    }
-    Status w1 = store->data_file_.write_exact_at(kPageSize, page1);
-    if (!w1.ok()) {
-      return w1;
-    }
-    Status sync_s = store->data_file_.sync_data();
-    if (!sync_s.ok()) {
-      return sync_s;
-    }
-    Status dir_sync_s = FileHandle::sync_directory(db_dir);
-    if (!dir_sync_s.ok()) {
-      return dir_sync_s;
-    }
-
-    store->superblock_ = sb;
-    store->page_count_ = 2;
-    return Result<std::unique_ptr<PageStore>>::Ok(std::move(store));
-  }
 
   // Validate existing file length.
   if (file_size < 2ULL * kPageSize || (file_size % kPageSize) != 0ULL) {

@@ -1,6 +1,8 @@
 #include "pagedb/page_codec.h"
 
 #include <algorithm>
+#include <array>
+#include <cstddef>
 #include <cstring>
 #include <utility>
 #include <vector>
@@ -425,18 +427,22 @@ Status PageCodec::validate_btree_page_layout(
         sp.aux_page_id() == sp.page_id()) {
       return Status::Corruption("internal page leftmost_child_page_id is invalid");
     }
-    if (sp.num_slots() == 0) {
-      return Status::Corruption("internal page must contain at least one slot");
-    }
+    // A non-root internal page with zero slots (a single child) is legal: the
+    // delete policy in docs/BTREE_DESIGN.md never splits on delete, so an
+    // internal node whose merge does not fit may be left unary. Routing stays
+    // correct because every key goes to the leftmost child.
+    std::array<std::uint32_t, kMaxSlotsPerPage + 1> children{};
+    std::size_t child_count = 0;
+    children[child_count++] = sp.aux_page_id().value;
+
     std::span<const std::byte> prev_key{};
     for (std::uint16_t i = 0; i < sp.num_slots(); ++i) {
       auto rec_res = decode_internal_record(sp.slot_payload(i).value());
       if (!rec_res.ok()) {
         return rec_res.status();
       }
-      if (rec_res.value().right_child == sp.page_id() ||
-          rec_res.value().right_child == sp.aux_page_id()) {
-        return Status::Corruption("internal page child pointer cycle/duplicate");
+      if (rec_res.value().right_child == sp.page_id()) {
+        return Status::Corruption("internal page references itself as a child");
       }
       if (i > 0 &&
           compare_bytes(prev_key, rec_res.value().separator_key) >= 0) {
@@ -444,6 +450,15 @@ Status PageCodec::validate_btree_page_layout(
             "internal separator keys are not strictly sorted");
       }
       prev_key = rec_res.value().separator_key;
+      children[child_count++] = rec_res.value().right_child.value;
+    }
+
+    const auto children_end =
+        children.begin() + static_cast<std::ptrdiff_t>(child_count);
+    std::sort(children.begin(), children_end);
+    if (std::adjacent_find(children.begin(), children_end) != children_end) {
+      return Status::Corruption(
+          "internal page references the same child more than once");
     }
     return Status::Ok();
   }
@@ -527,9 +542,12 @@ Result<SlottedPage> SlottedPage::decode(
   std::memcpy(sp.data_.data(), page_bytes.data(), kPageSize);
 
   // Validate all slots and check pairwise non-overlap and byte conservation.
-  std::vector<std::pair<std::uint16_t, std::uint16_t>> intervals;
-  intervals.reserve(hdr.num_slots);
-  std::uint32_t active_payload_bytes = 0;
+  // num_slots <= kMaxSlotsPerPage is implied by lower_offset <= kPageSize, so
+  // a fixed stack array suffices and this noexcept decoder never allocates.
+  std::array<std::pair<std::uint16_t, std::uint16_t>, kMaxSlotsPerPage>
+      intervals{};
+  std::size_t interval_count = 0;
+  std::uint64_t active_payload_bytes = 0;
 
   for (std::uint16_t i = 0; i < hdr.num_slots; ++i) {
     const SlotEntry slot = sp.read_slot_unchecked(i);
@@ -544,19 +562,22 @@ Result<SlottedPage> SlottedPage::decode(
       return Status::Corruption("slot extent exceeds page boundary");
     }
     active_payload_bytes += slot.length;
-    intervals.emplace_back(slot.offset, slot_end.value());
+    intervals[interval_count++] = {slot.offset, slot_end.value()};
   }
 
-  std::sort(intervals.begin(), intervals.end());
-  for (std::size_t i = 1; i < intervals.size(); ++i) {
+  const auto intervals_end =
+      intervals.begin() + static_cast<std::ptrdiff_t>(interval_count);
+  std::sort(intervals.begin(), intervals_end);
+  for (std::size_t i = 1; i < interval_count; ++i) {
     if (intervals[i - 1].second > intervals[i].first) {
       return Status::Corruption("overlapping slot payload regions detected");
     }
   }
 
-  const std::uint32_t payload_region_bytes =
-      static_cast<std::uint32_t>(kPageSize - hdr.upper_offset);
-  if (active_payload_bytes + hdr.fragmented_free_bytes !=
+  const std::uint64_t payload_region_bytes =
+      static_cast<std::uint64_t>(kPageSize - hdr.upper_offset);
+  if (active_payload_bytes +
+          static_cast<std::uint64_t>(hdr.fragmented_free_bytes) !=
       payload_region_bytes) {
     return Status::Corruption(
         "slotted page active payload + fragmented_free_bytes mismatch");

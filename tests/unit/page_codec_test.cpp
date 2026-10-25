@@ -253,6 +253,52 @@ PAGEDB_TEST(LeafAndInternalRecordCodecAndLayoutValidation) {
       ErrorCode::kCorruption);
 }
 
+PAGEDB_TEST(InternalPageLayoutAllowsUnaryNodesAndRejectsDuplicateChildren) {
+  PageBuffer bytes{};
+
+  // Unary internal node (leftmost child only, zero slots) is legal.
+  SlottedPage unary;
+  PAGEDB_ASSERT_OK(unary.init(PageId(6), PageType::kInternal, PageId(2)));
+  PAGEDB_ASSERT_OK(unary.encode(bytes));
+  PAGEDB_ASSERT_OK(PageCodec::validate_btree_page_layout(bytes, PageId(6)));
+
+  // Two separators pointing at distinct children are legal.
+  auto rec_m_3 =
+      PageCodec::encode_internal_record(as_byte_span("m"), PageId(3)).value();
+  auto rec_t_4 =
+      PageCodec::encode_internal_record(as_byte_span("t"), PageId(4)).value();
+  SlottedPage good;
+  PAGEDB_ASSERT_OK(good.init(PageId(6), PageType::kInternal, PageId(2)));
+  PAGEDB_ASSERT_OK(good.insert_slot(0, rec_m_3));
+  PAGEDB_ASSERT_OK(good.insert_slot(1, rec_t_4));
+  PAGEDB_ASSERT_OK(good.encode(bytes));
+  PAGEDB_ASSERT_OK(PageCodec::validate_btree_page_layout(bytes, PageId(6)));
+
+  // Two right children that are the same page must be rejected (previously
+  // only duplicates of the leftmost child were detected).
+  auto rec_t_3 =
+      PageCodec::encode_internal_record(as_byte_span("t"), PageId(3)).value();
+  SlottedPage dup;
+  PAGEDB_ASSERT_OK(dup.init(PageId(6), PageType::kInternal, PageId(2)));
+  PAGEDB_ASSERT_OK(dup.insert_slot(0, rec_m_3));
+  PAGEDB_ASSERT_OK(dup.insert_slot(1, rec_t_3));
+  PAGEDB_ASSERT_OK(dup.encode(bytes));
+  PAGEDB_ASSERT_EQ(
+      PageCodec::validate_btree_page_layout(bytes, PageId(6)).code(),
+      ErrorCode::kCorruption);
+
+  // A right child equal to the leftmost child is still rejected.
+  auto rec_m_2 =
+      PageCodec::encode_internal_record(as_byte_span("m"), PageId(2)).value();
+  SlottedPage dup_left;
+  PAGEDB_ASSERT_OK(dup_left.init(PageId(6), PageType::kInternal, PageId(2)));
+  PAGEDB_ASSERT_OK(dup_left.insert_slot(0, rec_m_2));
+  PAGEDB_ASSERT_OK(dup_left.encode(bytes));
+  PAGEDB_ASSERT_EQ(
+      PageCodec::validate_btree_page_layout(bytes, PageId(6)).code(),
+      ErrorCode::kCorruption);
+}
+
 }  // namespace
 }  // namespace pagedb
 

@@ -18,6 +18,10 @@ using PageBuffer = std::array<std::byte, kPageSize>;
 inline constexpr std::size_t kSuperblockHeaderEnd = 112;  // 0x70
 inline constexpr std::size_t kSlotEntrySize = 4;
 inline constexpr std::size_t kChecksumFieldOffset = 0x24;
+// Upper bound on num_slots for any decodable slotted page: the slot directory
+// must fit in [kPageHeaderSize, kPageSize).
+inline constexpr std::size_t kMaxSlotsPerPage =
+    (kPageSize - kPageHeaderSize) / kSlotEntrySize;
 
 struct PageHeader {
   std::uint32_t page_magic{kPageMagic};

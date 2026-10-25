@@ -59,6 +59,19 @@ PAGEDB_TEST(PageGuardMoveSemanticsAndSingleUnpin) {
   PAGEDB_ASSERT_OK(pool.verify_invariants());
 }
 
+PAGEDB_TEST(SuperblockPageIsNeverCached) {
+  test::TempDir tmp("pagedb_bp_superblock");
+  auto store_res = PageStore::open(tmp.path() / "db");
+  PAGEDB_ASSERT_OK(store_res);
+  BufferPool pool(*store_res.value(), 2);
+
+  auto res = pool.fetch_page(kSuperblockPageId);
+  PAGEDB_ASSERT_FALSE(res.ok());
+  PAGEDB_ASSERT_EQ(res.code(), ErrorCode::kInvalidArgument);
+  PAGEDB_ASSERT_EQ(pool.resident_count(), 0U);
+  PAGEDB_ASSERT_OK(pool.verify_invariants());
+}
+
 PAGEDB_TEST(CapacityOneAndTwoDirtyEvictionAndPinExhaustion) {
   test::TempDir tmp("pagedb_bp_evict");
   auto store_res = PageStore::open(tmp.path() / "db");

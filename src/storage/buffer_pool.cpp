@@ -9,7 +9,23 @@ BufferPool::BufferPool(PageStore& store, std::size_t capacity_frames)
   assert(capacity_frames > 0);
 }
 
+BufferPool::~BufferPool() noexcept {
+  // A PageGuard holds a raw BufferPool*; destroying the pool while a guard is
+  // alive would leave that guard dangling. Dirty frames are intentionally not
+  // flushed here because a destructor cannot report I/O errors; callers must
+  // invoke flush_all() explicitly.
+  for ([[maybe_unused]] const Frame& f : frames_) {
+    assert(f.pin_count == 0 && "BufferPool destroyed while a page is pinned");
+  }
+}
+
 Result<PageGuard> BufferPool::fetch_page(PageId page_id) {
+  if (page_id == kSuperblockPageId) {
+    // The superblock has a single in-memory owner (see ADR 0006). Caching it
+    // here as well would let a stale frame overwrite a newer superblock.
+    return Status::InvalidArgument(
+        "the superblock page is not managed by the buffer pool");
+  }
   if (!page_id.is_valid() || page_id.value >= store_.page_count()) {
     return Status::InvalidArgument("fetch_page PageId out of allocated range");
   }
