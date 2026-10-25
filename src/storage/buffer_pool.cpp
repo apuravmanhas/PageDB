@@ -138,6 +138,23 @@ Status BufferPool::flush_page(PageId page_id) {
   return Status::Ok();
 }
 
+Status BufferPool::discard_page(PageId page_id) noexcept {
+  auto it = page_table_.find(page_id);
+  if (it == page_table_.end()) {
+    return Status::Ok();
+  }
+  Frame& frame = frames_[it->second];
+  if (frame.pin_count > 0) {
+    return Status::InvalidArgument("cannot discard a pinned buffer pool frame");
+  }
+  frame.data.fill(std::byte{0});
+  frame.page_id = kInvalidPageId;
+  frame.is_dirty = false;
+  frame.ref_bit = false;
+  page_table_.erase(it);
+  return Status::Ok();
+}
+
 Status BufferPool::flush_all() {
   for (Frame& frame : frames_) {
     if (frame.page_id.is_valid() && frame.is_dirty) {

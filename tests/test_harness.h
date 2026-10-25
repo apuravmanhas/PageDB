@@ -103,22 +103,18 @@ inline int run_all_tests() {
     }                                                       \
   } while (false)
 
-#define PAGEDB_ASSERT_EQ(lhs, rhs)                                     \
-  do {                                                                 \
-    const auto& _lhs_val = (lhs);                                      \
-    const auto& _rhs_val = (rhs);                                      \
-    if (!(_lhs_val == _rhs_val)) {                                     \
-      ::pagedb::test::fail(__FILE__, __LINE__, #lhs " == " #rhs);      \
-    }                                                                  \
+#define PAGEDB_ASSERT_EQ(lhs, rhs)                                \
+  do {                                                            \
+    if (!((lhs) == (rhs))) {                                      \
+      ::pagedb::test::fail(__FILE__, __LINE__, #lhs " == " #rhs); \
+    }                                                             \
   } while (false)
 
-#define PAGEDB_ASSERT_NE(lhs, rhs)                                     \
-  do {                                                                 \
-    const auto& _lhs_val = (lhs);                                      \
-    const auto& _rhs_val = (rhs);                                      \
-    if (!(_lhs_val != _rhs_val)) {                                     \
-      ::pagedb::test::fail(__FILE__, __LINE__, #lhs " != " #rhs);      \
-    }                                                                  \
+#define PAGEDB_ASSERT_NE(lhs, rhs)                                \
+  do {                                                            \
+    if (!((lhs) != (rhs))) {                                      \
+      ::pagedb::test::fail(__FILE__, __LINE__, #lhs " != " #rhs); \
+    }                                                             \
   } while (false)
 
 #define PAGEDB_ASSERT_OK(status_or_result)                                      \

@@ -36,6 +36,10 @@ class BufferPool {
   // Flushes a specific resident page if dirty.
   [[nodiscard]] Status flush_page(PageId page_id);
 
+  // Discards a specific unpinned resident page without writing it back.
+  // Used when a page is freed and returned to the allocator free list.
+  [[nodiscard]] Status discard_page(PageId page_id) noexcept;
+
   // Flushes all dirty frames to PageStore and synchronizes the data file.
   [[nodiscard]] Status flush_all();
 
@@ -45,6 +49,9 @@ class BufferPool {
   }
   [[nodiscard]] std::uint32_t pin_count(PageId page_id) const noexcept;
   [[nodiscard]] bool is_dirty(PageId page_id) const noexcept;
+  [[nodiscard]] bool is_resident(PageId page_id) const noexcept {
+    return page_table_.find(page_id) != page_table_.end();
+  }
   [[nodiscard]] const BufferPoolStats& stats() const noexcept { return stats_; }
 
   // Debug invariant checker for frame table and pin counts.
