@@ -323,6 +323,7 @@ void BufferPool::mark_frame_dirty(std::size_t frame_index) noexcept {
 void BufferPool::unpin_frame(std::size_t frame_index,
                              PageId expected_id) noexcept {
   std::lock_guard<std::mutex> lock(mutex_);
+  (void)expected_id;
   assert(frame_index < frames_.size());
   Frame& frame = frames_[frame_index];
   assert(frame.page_id == expected_id);

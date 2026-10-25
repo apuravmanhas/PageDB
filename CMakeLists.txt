@@ -55,6 +55,9 @@ target_link_libraries(pagedb PUBLIC pagedb_warnings)
 add_executable(pagedb_cli app/pagedb_cli.cpp)
 target_link_libraries(pagedb_cli PRIVATE pagedb pagedb_warnings)
 
+add_executable(pagedb_bench bench/pagedb_bench.cpp)
+target_link_libraries(pagedb_bench PRIVATE pagedb pagedb_warnings)
+
 if(PAGEDB_BUILD_TESTS)
   enable_testing()
 
