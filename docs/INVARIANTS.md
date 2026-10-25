@@ -38,7 +38,7 @@ Every change to PageDB must preserve the invariants listed below. Diagnostic ver
 - **T-1 (Key Ordering & Uniqueness)**: Within every leaf and internal page, keys are strictly sorted according to the unsigned-byte lexicographic comparator (`key[0] < key[1] < ...`).
 - **T-2 (Subtree Interval Routing)**: In an internal page with leftmost child $C_0$ and slots $(K_0, C_1), \dots, (K_{m-1}, C_m)$, every key in subtree $C_0$ is $< K_0$, every key in subtree $C_i$ ($1 \le i < m$) is in $[K_{i-1}, K_i)$, and every key in subtree $C_m$ is $\ge K_{m-1}$.
 - **T-3 (Uniform Leaf Depth)**: All leaf pages reachable from `root_page_id` lie at the exact same depth from the root.
-- **T-4 (Forward Leaf Chain)**: Starting at the leftmost leaf and following `next_leaf_page_id` visits every leaf page in the tree in strictly increasing key order and terminates at `INVALID_PAGE_ID (0)` without cycles.
+- **T-4 (Forward Leaf Chain)**: Starting at the leftmost leaf and following `next_leaf_page_id` visits every leaf page in the tree in strictly increasing key order and terminates at `kInvalidPageId (0xFFFFFFFF)` without cycles.
 - **T-5 (Variable-Length Parent Split Safety)**: Because keys have variable length (`0..256` bytes), replacing a separator key in an internal parent during leaf redistribution or child merge may increase the parent's byte occupancy; the parent must compact or split safely if the replacement separator exceeds remaining parent free space.
 
 ## 6. WAL and Recovery Invariants (Milestones M7+)
