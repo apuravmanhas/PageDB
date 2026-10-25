@@ -43,6 +43,7 @@ const PosixIoOps& PosixIoOps::default_ops() noexcept {
       .fdatasync_fn = &::fdatasync,
       .fsync_fn = &::fsync,
       .fstat_fn = &::fstat,
+      .ftruncate_fn = &::ftruncate,
       .close_fn = &::close,
   };
   return kDefault;
@@ -213,6 +214,25 @@ Result<std::uint64_t> FileHandle::size_bytes() const {
     return Status::IoError("negative file size reported by fstat");
   }
   return Result<std::uint64_t>::Ok(static_cast<std::uint64_t>(st.st_size));
+}
+
+Status FileHandle::truncate(std::uint64_t new_size) const {
+  if (!is_open()) {
+    return Status::InvalidArgument("truncate on closed FileHandle");
+  }
+  if (new_size >
+      static_cast<std::uint64_t>(std::numeric_limits<off_t>::max())) {
+    return Status::InvalidArgument("truncate size exceeds off_t maximum");
+  }
+  int rc = 0;
+  do {
+    rc = ops_->ftruncate_fn(fd_, static_cast<off_t>(new_size));
+  } while (rc < 0 && errno == EINTR);
+
+  if (rc != 0) {
+    return Status::IoError(errno_message("ftruncate failed", errno));
+  }
+  return Status::Ok();
 }
 
 Status FileHandle::sync_data() const {

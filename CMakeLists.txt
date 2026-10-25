@@ -42,6 +42,7 @@ add_library(pagedb STATIC
   src/storage/page_allocator.cpp
   src/storage/page_guard.cpp
   src/storage/buffer_pool.cpp
+  src/storage/wal.cpp
   src/index/btree.cpp
   src/db/database.cpp
 )
@@ -72,4 +73,5 @@ if(PAGEDB_BUILD_TESTS)
   pagedb_add_unit_test(buffer_pool_test tests/unit/buffer_pool_test.cpp)
   pagedb_add_unit_test(btree_test tests/unit/btree_test.cpp)
   pagedb_add_unit_test(database_test tests/unit/database_test.cpp)
+  pagedb_add_unit_test(wal_test tests/unit/wal_test.cpp)
 endif()

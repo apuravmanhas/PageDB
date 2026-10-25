@@ -17,6 +17,7 @@
 #include "pagedb/page_store.h"
 #include "pagedb/status.h"
 #include "pagedb/types.h"
+#include "pagedb/wal.h"
 
 namespace pagedb {
 
@@ -68,12 +69,16 @@ class Database {
   [[nodiscard]] std::uint32_t page_count() const noexcept;
   [[nodiscard]] PageId root_page_id() const noexcept;
   [[nodiscard]] PageId free_list_head() const noexcept;
+  [[nodiscard]] Lsn max_committed_lsn() const noexcept;
   [[nodiscard]] BufferPoolStats buffer_pool_stats() const noexcept;
 
  private:
   [[nodiscard]] Status ensure_open() const noexcept;
+  [[nodiscard]] Status commit_active_transaction();
+  void abort_active_transaction() noexcept;
 
   std::unique_ptr<PageStore> store_;
+  std::unique_ptr<Wal> wal_;
   std::unique_ptr<PageAllocator> allocator_;
   std::unique_ptr<BufferPool> pool_;
   std::unique_ptr<BTree> tree_;

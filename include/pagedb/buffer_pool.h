@@ -40,6 +40,18 @@ class BufferPool {
   // Used when a page is freed and returned to the allocator free list.
   [[nodiscard]] Status discard_page(PageId page_id) noexcept;
 
+  // Discards all unpinned resident pages without writing them back.
+  // Used when rolling back an aborted transaction.
+  void discard_all_pages() noexcept;
+
+  // Flushes all dirty frames to PageStore without calling store_.sync().
+  [[nodiscard]] Status flush_dirty_pages();
+
+  // Updates the cached image of a resident unpinned frame (e.g., after
+  // stamping a new page_lsn at commit).
+  void update_resident_frame(
+      PageId page_id, std::span<const std::byte, kPageSize> image) noexcept;
+
   // Flushes all dirty frames to PageStore and synchronizes the data file.
   [[nodiscard]] Status flush_all();
 

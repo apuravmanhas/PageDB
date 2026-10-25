@@ -40,12 +40,13 @@ class PageAllocator {
     return page_id.is_valid() && page_id.value < superblock_.next_page_id.value;
   }
 
+  void reload_superblock() noexcept { superblock_ = store_.superblock(); }
+  [[nodiscard]] Status flush_superblock();
+
   // Debug verifier checking allocator bounds and physical page headers.
   [[nodiscard]] Status verify_allocation_state() const;
 
  private:
-  [[nodiscard]] Status flush_superblock();
-
   PageStore& store_;
   Superblock superblock_;
 };

@@ -1,5 +1,6 @@
 #include "pagedb/buffer_pool.h"
 
+#include <algorithm>
 #include <cassert>
 
 namespace pagedb {
@@ -155,7 +156,18 @@ Status BufferPool::discard_page(PageId page_id) noexcept {
   return Status::Ok();
 }
 
-Status BufferPool::flush_all() {
+void BufferPool::discard_all_pages() noexcept {
+  for (Frame& frame : frames_) {
+    assert(frame.pin_count == 0);
+    frame.data.fill(std::byte{0});
+    frame.page_id = kInvalidPageId;
+    frame.is_dirty = false;
+    frame.ref_bit = false;
+  }
+  page_table_.clear();
+}
+
+Status BufferPool::flush_dirty_pages() {
   for (Frame& frame : frames_) {
     if (frame.page_id.is_valid() && frame.is_dirty) {
       Status ws = store_.write_page(frame.page_id, frame.data);
@@ -165,6 +177,26 @@ Status BufferPool::flush_all() {
       frame.is_dirty = false;
       ++stats_.dirty_flushes;
     }
+  }
+  return Status::Ok();
+}
+
+void BufferPool::update_resident_frame(
+    PageId page_id, std::span<const std::byte, kPageSize> image) noexcept {
+  auto it = page_table_.find(page_id);
+  if (it == page_table_.end()) {
+    return;
+  }
+  Frame& frame = frames_[it->second];
+  assert(frame.pin_count == 0);
+  assert(!frame.is_dirty);
+  std::copy(image.begin(), image.end(), frame.data.begin());
+}
+
+Status BufferPool::flush_all() {
+  Status s = flush_dirty_pages();
+  if (!s.ok()) {
+    return s;
   }
   return store_.sync();
 }

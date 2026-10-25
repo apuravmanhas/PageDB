@@ -17,6 +17,7 @@ using PageBuffer = std::array<std::byte, kPageSize>;
 
 inline constexpr std::size_t kSuperblockHeaderEnd = 112;  // 0x70
 inline constexpr std::size_t kSlotEntrySize = 4;
+inline constexpr std::size_t kPageLsnFieldOffset = 0x10;
 inline constexpr std::size_t kChecksumFieldOffset = 0x24;
 // Upper bound on num_slots for any decodable slotted page: the slot directory
 // must fit in [kPageHeaderSize, kPageSize).
@@ -64,6 +65,11 @@ class PageCodec {
   // the CRC32C checksum over all 4096 bytes into page[0x24..0x28).
   [[nodiscard]] static Status encode_header_and_checksum(
       const PageHeader& header, std::span<std::byte, kPageSize> page) noexcept;
+
+  // Stamps page_lsn at offset 0x10 and recomputes the 4096-byte page CRC32C at
+  // offset 0x24.
+  [[nodiscard]] static Status stamp_lsn(
+      std::span<std::byte, kPageSize> page, Lsn lsn) noexcept;
 
   // Validates magic, format version, CRC32C (before parsing offsets), expected
   // PageId, flags, and reserved fields.

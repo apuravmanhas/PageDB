@@ -52,6 +52,19 @@ Status PageCodec::encode_header_and_checksum(
   return write_u32_le_at(page, kChecksumFieldOffset, crc);
 }
 
+Status PageCodec::stamp_lsn(std::span<std::byte, kPageSize> page,
+                            Lsn lsn) noexcept {
+  if (!lsn.is_valid()) {
+    return Status::InvalidArgument("cannot stamp invalid Lsn onto page");
+  }
+  Status s = write_u64_le_at(page, kPageLsnFieldOffset, lsn.value);
+  if (!s.ok()) {
+    return s;
+  }
+  const std::uint32_t crc = compute_page_crc32c(page, kChecksumFieldOffset);
+  return write_u32_le_at(page, kChecksumFieldOffset, crc);
+}
+
 Result<PageHeader> PageCodec::decode_and_verify_header(
     std::span<const std::byte, kPageSize> page,
     PageId expected_page_id) noexcept {

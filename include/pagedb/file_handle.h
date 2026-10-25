@@ -28,6 +28,7 @@ struct PosixIoOps {
                                off_t offset);
   using FsyncFn = int (*)(int fd);
   using FstatFn = int (*)(int fd, struct stat* st);
+  using FtruncateFn = int (*)(int fd, off_t length);
   using CloseFn = int (*)(int fd);
 
   PreadFn pread_fn;
@@ -35,6 +36,7 @@ struct PosixIoOps {
   FsyncFn fdatasync_fn;
   FsyncFn fsync_fn;
   FstatFn fstat_fn;
+  FtruncateFn ftruncate_fn;
   CloseFn close_fn;
 
   [[nodiscard]] static const PosixIoOps& default_ops() noexcept;
@@ -69,6 +71,7 @@ class FileHandle {
                                       std::span<const std::byte> buffer) const;
 
   [[nodiscard]] Result<std::uint64_t> size_bytes() const;
+  [[nodiscard]] Status truncate(std::uint64_t new_size) const;
   [[nodiscard]] Status sync_data() const;
   [[nodiscard]] Status sync_all() const;
   [[nodiscard]] Status close() noexcept;
