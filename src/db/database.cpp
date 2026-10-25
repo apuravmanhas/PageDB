@@ -83,6 +83,7 @@ Result<std::unique_ptr<Database>> Database::open(
   }
 
   auto db = std::make_unique<Database>();
+  db->options_ = options;
   db->store_ = std::move(store);
   db->wal_ = std::move(wal);
   db->allocator_ = std::make_unique<PageAllocator>(*db->store_);
@@ -252,6 +253,12 @@ Status Database::txn_commit(TxnId txn_id) {
   }
   allocator_->reload_superblock();
   has_active_transaction_ = false;
+
+  if (options_.wal_auto_checkpoint_bytes > 0 &&
+      wal_->write_offset() >= options_.wal_auto_checkpoint_bytes) {
+    (void)checkpoint();
+  }
+
   return Status::Ok();
 }
 
@@ -400,6 +407,68 @@ Status Database::sync() {
   return pool_->flush_all();
 }
 
+Status Database::checkpoint() {
+  Status s = ensure_open();
+  if (!s.ok()) {
+    return s;
+  }
+  if (has_active_transaction_) {
+    return Status::AlreadyOpen(
+        "cannot perform checkpoint while a transaction is active");
+  }
+
+  // Phase 1: Flush all dirty buffer pool frames into PageStore.
+  Status flush_s = pool_->flush_dirty_pages();
+  if (!flush_s.ok()) {
+    store_->poison();
+    return flush_s;
+  }
+
+  // Phase 2: Durably synchronize all data pages to disk.
+  Status sync_s = store_->sync();
+  if (!sync_s.ok()) {
+    store_->poison();
+    return sync_s;
+  }
+
+  // Phase 3: Durably update Superblock::checkpoint_lsn on disk and sync.
+  Lsn ckpt_lsn = wal_->max_committed_lsn();
+  if (!ckpt_lsn.is_valid()) {
+    ckpt_lsn = store_->superblock().checkpoint_lsn;
+  }
+  if (!ckpt_lsn.is_valid()) {
+    ckpt_lsn = Lsn(0);
+  }
+
+  Status sb_s = store_->update_checkpoint_lsn(ckpt_lsn);
+  if (!sb_s.ok()) {
+    store_->poison();
+    return sb_s;
+  }
+  allocator_->reload_superblock();
+
+  // Phase 4: Append CHECKPOINT record to WAL, sync, and reclaim/reset WAL to 32 bytes.
+  auto ckpt_rec_res = wal_->append_checkpoint();
+  if (!ckpt_rec_res.ok()) {
+    store_->poison();
+    return ckpt_rec_res.status();
+  }
+  Status wal_sync_s = wal_->sync();
+  if (!wal_sync_s.ok()) {
+    store_->poison();
+    return wal_sync_s;
+  }
+
+  const Lsn next_base_lsn = wal_->peek_next_lsn();
+  Status reset_s = wal_->reset(next_base_lsn);
+  if (!reset_s.ok()) {
+    store_->poison();
+    return reset_s;
+  }
+
+  return Status::Ok();
+}
+
 Status Database::close() noexcept {
   if (!is_open_) {
     return Status::Ok();
@@ -450,6 +519,18 @@ PageId Database::free_list_head() const noexcept {
 
 Lsn Database::max_committed_lsn() const noexcept {
   return (is_open_ && wal_) ? wal_->max_committed_lsn() : kInvalidLsn;
+}
+
+Lsn Database::checkpoint_lsn() const noexcept {
+  return is_open_ ? store_->superblock().checkpoint_lsn : kInvalidLsn;
+}
+
+Result<std::uint64_t> Database::wal_size_bytes() const {
+  Status s = ensure_open();
+  if (!s.ok()) {
+    return s;
+  }
+  return wal_->size_bytes();
 }
 
 BufferPoolStats Database::buffer_pool_stats() const noexcept {

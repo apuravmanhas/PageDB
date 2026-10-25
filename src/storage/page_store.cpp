@@ -208,9 +208,12 @@ Status PageStore::validate_and_load_metadata(Lsn max_committed_wal_lsn,
     return rr;
   }
 
-  if (has_wal_records || max_committed_wal_lsn.is_valid()) {
+  if (has_wal_records || max_committed_wal_lsn.is_valid() ||
+      sb.checkpoint_lsn.is_valid()) {
     const std::uint64_t max_lsn_val =
-        max_committed_wal_lsn.is_valid() ? max_committed_wal_lsn.value : 0ULL;
+        std::max(max_committed_wal_lsn.is_valid() ? max_committed_wal_lsn.value
+                                                  : 0ULL,
+                 sb.checkpoint_lsn.is_valid() ? sb.checkpoint_lsn.value : 0ULL);
     PageBuffer buf{};
     for (std::uint32_t p = 0; p < page_count_; ++p) {
       auto off_res = checked_page_offset(PageId(p), kPageSize);
@@ -225,9 +228,9 @@ Status PageStore::validate_and_load_metadata(Lsn max_committed_wal_lsn,
       if (!hdr_res.ok()) {
         return hdr_res.status();
       }
-      if (hdr_res.value().page_lsn.value > max_lsn_val) {
+      if (max_lsn_val > 0 && hdr_res.value().page_lsn.value > max_lsn_val) {
         return Status::Corruption(
-            "data page carries page_lsn exceeding max committed WAL Lsn");
+            "data page carries page_lsn exceeding max committed WAL or checkpoint Lsn");
       }
     }
   }
@@ -348,6 +351,35 @@ Status PageStore::install_staged_pages() {
   staged_pages_.clear();
   in_transaction_ = false;
   return Status::Ok();
+}
+
+Status PageStore::update_checkpoint_lsn(Lsn checkpoint_lsn) {
+  if (poisoned_) {
+    return Status::DatabasePoisoned(
+        "update_checkpoint_lsn forbidden on poisoned PageStore");
+  }
+  if (!data_file_.is_open()) {
+    return Status::InvalidArgument("update_checkpoint_lsn on closed PageStore");
+  }
+  if (in_transaction_) {
+    return Status::InvalidArgument(
+        "cannot update_checkpoint_lsn while transaction is active");
+  }
+
+  superblock_.checkpoint_lsn = checkpoint_lsn;
+  staged_superblock_.checkpoint_lsn = checkpoint_lsn;
+
+  PageBuffer sb_page{};
+  Status es = PageCodec::encode_superblock(superblock_, sb_page);
+  if (!es.ok()) {
+    return es;
+  }
+  Status ws = data_file_.write_exact_at(0, sb_page);
+  if (!ws.ok()) {
+    poisoned_ = true;
+    return ws;
+  }
+  return data_file_.sync_data();
 }
 
 Status PageStore::read_page(PageId page_id,

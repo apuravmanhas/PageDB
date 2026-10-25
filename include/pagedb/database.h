@@ -28,6 +28,9 @@ struct DatabaseOptions {
   bool create_if_missing{true};
   bool error_if_exists{false};
   std::size_t buffer_pool_frames{kDefaultBufferPoolFrames};
+  // Automatically triggers a checkpoint when pagedb.wal reaches this size.
+  // 0 disables auto-checkpointing.
+  std::uint64_t wal_auto_checkpoint_bytes{4ULL * 1024ULL * 1024ULL};
   const PosixIoOps* io_ops{&PosixIoOps::default_ops()};
 };
 
@@ -67,6 +70,13 @@ class Database {
 
   [[nodiscard]] Status verify() const;
   [[nodiscard]] Status sync();
+
+  // Performs a full durable checkpoint: flushes all dirty buffer pool frames to
+  // pagedb.data, fsyncs pagedb.data, durably advances Superblock::checkpoint_lsn
+  // on disk, appends a CHECKPOINT record to pagedb.wal, and reclaims/resets
+  // pagedb.wal back to 32 bytes with base_lsn = next_lsn.
+  [[nodiscard]] Status checkpoint();
+
   [[nodiscard]] Status close() noexcept;
 
   [[nodiscard]] bool is_open() const noexcept { return is_open_; }
@@ -75,6 +85,8 @@ class Database {
   [[nodiscard]] PageId root_page_id() const noexcept;
   [[nodiscard]] PageId free_list_head() const noexcept;
   [[nodiscard]] Lsn max_committed_lsn() const noexcept;
+  [[nodiscard]] Lsn checkpoint_lsn() const noexcept;
+  [[nodiscard]] Result<std::uint64_t> wal_size_bytes() const;
   [[nodiscard]] BufferPoolStats buffer_pool_stats() const noexcept;
 
  private:
@@ -99,6 +111,7 @@ class Database {
   std::unique_ptr<PageAllocator> allocator_;
   std::unique_ptr<BufferPool> pool_;
   std::unique_ptr<BTree> tree_;
+  DatabaseOptions options_{};
   bool is_open_{false};
   bool has_active_transaction_{false};
 };

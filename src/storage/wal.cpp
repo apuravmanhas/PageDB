@@ -145,6 +145,7 @@ Status WalCodec::encode_record(const WalRecordHeader& hdr,
     case WalRecordType::kBegin:
     case WalRecordType::kCommit:
     case WalRecordType::kAbort:
+    case WalRecordType::kCheckpoint:
       if (hdr.page_id != kInvalidPageId || hdr.payload_len != 0 ||
           !payload.empty()) {
         return Status::InvalidArgument(
@@ -231,6 +232,9 @@ Result<WalRecordHeader> WalCodec::decode_record_header(
       break;
     case 4:
       type = WalRecordType::kAbort;
+      break;
+    case 5:
+      type = WalRecordType::kCheckpoint;
       break;
     default:
       return Status::Corruption("unknown WalRecordType in WAL record header");
@@ -584,6 +588,15 @@ Result<WalRecoveryReport> Wal::recover() {
         last_finished_end_offset = kWalFileHeaderSize + pos + rec_total_len;
         break;
 
+      case WalRecordType::kCheckpoint:
+        if (active_txn_id.is_valid()) {
+          return Status::Corruption(
+              "CHECKPOINT record during active transaction in WAL");
+        }
+        last_finished_next_lsn = expected_lsn;
+        last_finished_end_offset = kWalFileHeaderSize + pos + rec_total_len;
+        break;
+
       default:
         return Status::Corruption("unexpected WalRecordType in WAL scan");
     }
@@ -661,6 +674,11 @@ Result<Lsn> Wal::append_abort(TxnId txn_id) {
   return append_empty_record(WalRecordType::kAbort, txn_id);
 }
 
+Result<Lsn> Wal::append_checkpoint() {
+  const TxnId sys_txn(next_txn_id_.value);
+  return append_empty_record(WalRecordType::kCheckpoint, sys_txn);
+}
+
 Result<Lsn> Wal::append_page_image(
     TxnId txn_id, PageId page_id,
     std::span<std::byte, kPageSize> in_out_page_image) {
@@ -700,6 +718,42 @@ Status Wal::sync() {
     return Status::InvalidArgument("sync on closed WAL");
   }
   return file_.sync_data();
+}
+
+Status Wal::reset(Lsn new_base_lsn) {
+  if (!file_.is_open()) {
+    return Status::InvalidArgument("reset on closed WAL");
+  }
+  if (!new_base_lsn.is_valid()) {
+    return Status::InvalidArgument("reset with invalid Lsn");
+  }
+
+  WalFileHeader hdr{};
+  hdr.base_lsn = new_base_lsn;
+  std::array<std::byte, kWalFileHeaderSize> hdr_buf{};
+  Status es = WalCodec::encode_file_header(hdr, hdr_buf);
+  if (!es.ok()) {
+    return es;
+  }
+
+  Status ws = file_.write_exact_at(0, hdr_buf);
+  if (!ws.ok()) {
+    return ws;
+  }
+  Status ts = file_.truncate(kWalFileHeaderSize);
+  if (!ts.ok()) {
+    return ts;
+  }
+  Status ss = file_.sync_data();
+  if (!ss.ok()) {
+    return ss;
+  }
+
+  header_ = hdr;
+  write_offset_ = kWalFileHeaderSize;
+  next_lsn_ = new_base_lsn;
+  max_committed_lsn_ = kInvalidLsn;
+  return Status::Ok();
 }
 
 void Wal::discard_unsynced_from(std::uint64_t offset, Lsn reset_next_lsn,

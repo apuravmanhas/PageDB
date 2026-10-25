@@ -59,6 +59,10 @@ class PageStore {
   // the active transaction. Must only be called after WAL commit sync succeeds.
   [[nodiscard]] Status install_staged_pages();
 
+  // Updates Superblock::checkpoint_lsn in-memory and on disk, and synchronizes
+  // pagedb.data.
+  [[nodiscard]] Status update_checkpoint_lsn(Lsn checkpoint_lsn);
+
   // Recovery helpers used by Database::open() before metadata validation.
   [[nodiscard]] Status write_raw_page_for_recovery(
       PageId page_id, std::span<const std::byte, kPageSize> page_image);

@@ -121,6 +121,9 @@ class Wal {
   [[nodiscard]] std::uint64_t write_offset() const noexcept {
     return write_offset_;
   }
+  [[nodiscard]] Result<std::uint64_t> size_bytes() const {
+    return file_.size_bytes();
+  }
 
   [[nodiscard]] Result<Lsn> append_begin(TxnId txn_id);
   [[nodiscard]] Result<Lsn> append_page_image(
@@ -128,8 +131,10 @@ class Wal {
       std::span<std::byte, kPageSize> in_out_page_image);
   [[nodiscard]] Result<Lsn> append_commit(TxnId txn_id);
   [[nodiscard]] Result<Lsn> append_abort(TxnId txn_id);
+  [[nodiscard]] Result<Lsn> append_checkpoint();
 
   [[nodiscard]] Status sync();
+  [[nodiscard]] Status reset(Lsn new_base_lsn);
   void discard_unsynced_from(std::uint64_t offset, Lsn reset_next_lsn,
                              TxnId reset_next_txn_id,
                              Lsn prev_max_committed_lsn) noexcept;
