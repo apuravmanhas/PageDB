@@ -1,0 +1,64 @@
+# Build directories
+build/
+build-*/
+out/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+Testing/
+compile_commands.json
+
+# Compiled binaries and libraries
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dll
+*.dylib
+*.exe
+pagedb_cli
+pagedb_inspect
+pagedb_verify
+pagedb_bench
+pagedb_crashtest
+
+# Database runtime and temporary files
+*.data
+*.wal
+*.lock
+*.db
+*.tmp
+/tmp_test_*/
+
+# Crash dumps, sanitizers, and profiling artifacts
+/core
+/core.*
+*.core
+*.profraw
+*.profdata
+*.gcda
+*.gcno
+*.gcov
+perf.data*
+
+# Benchmark raw outputs
+benchmarks/results/
+
+# Secrets and local environment files
+.env
+.env.*
+*.pem
+*.key
+*.crt
+
+# IDE and OS files
+.vscode/
+.idea/
+.vs/
+.clangd/
+.cache/
+.DS_Store
+Thumbs.db

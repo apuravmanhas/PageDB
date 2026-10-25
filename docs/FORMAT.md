@@ -26,7 +26,7 @@ Every page in `pagedb.data` (including Page 0) starts with the following 48-byte
 | `0x18` | 2 | `u16` | `lower_offset` | End of slot directory (`48 + num_slots * 4` for slotted pages; `112` for Superblock; `56` for Free) |
 | `0x1A` | 2 | `u16` | `upper_offset` | Start of payload region growing downward from `4096` (`4096` for non-slotted pages) |
 | `0x1C` | 4 | `u32` | `fragmented_free_bytes` | Reclaimable dead payload bytes inside `[upper_offset, 4096)` |
-| `0x20` | 4 | `u32` | `aux_page_id` | Leaf: `next_leaf_page_id` (`0` = none). Internal: `leftmost_child_page_id`. Free: `next_free_page_id` (`0` = none). Superblock: `0`. |
+| `0x20` | 4 | `u32` | `aux_page_id` | Leaf: `next_leaf_page_id` (`0xFFFFFFFF` = none). Internal: `leftmost_child_page_id`. Free: `next_free_page_id` (`0xFFFFFFFF` = none). Superblock: `0xFFFFFFFF`. |
 | `0x24` | 4 | `u32` | `checksum` | CRC32C (Castagnoli) over all 4096 bytes with bytes `0x24..0x27` set to `0` |
 | `0x28` | 8 | `u64` | `reserved` | Must be `0` |
 
@@ -43,7 +43,7 @@ Every page in `pagedb.data` (including Page 0) starts with the following 48-byte
 
 ## 3. Superblock Layout (`PageId(0)`, Offsets `0x030..0x06F`)
 
-Page 0 has `page_type = 1` (`Superblock`), `num_slots = 0`, `lower_offset = 112` (`0x070`), `upper_offset = 4096`, `fragmented_free_bytes = 0`, `aux_page_id = 0`.
+Page 0 has `page_type = 1` (`Superblock`), `num_slots = 0`, `lower_offset = 112` (`0x070`), `upper_offset = 4096`, `fragmented_free_bytes = 0`, `aux_page_id = 0xFFFFFFFF`.
 
 Its 64-byte payload occupies bytes `0x030..0x06F`:
 
@@ -53,7 +53,7 @@ Its 64-byte payload occupies bytes `0x030..0x06F`:
 | `0x38` | 4 | `u32` | `page_size` | Must equal `4096` |
 | `0x3C` | 4 | `u32` | `root_page_id` | Page ID of B+ tree root (`>= 1` and `< next_page_id`) |
 | `0x40` | 4 | `u32` | `next_page_id` | Next unallocated page ID (`>= 2`; equals file page count when append-only) |
-| `0x44` | 4 | `u32` | `free_list_head` | Head `PageId` of free list (`0` = empty free list) |
+| `0x44` | 4 | `u32` | `free_list_head` | Head `PageId` of free list (`0xFFFFFFFF` = empty free list) |
 | `0x48` | 8 | `u64` | `checkpoint_lsn` | Last completed checkpoint LSN (`0` before checkpoint support) |
 | `0x50` | 4 | `u32` | `max_key_size` | Must equal `256` |
 | `0x54` | 4 | `u32` | `max_value_size` | Must equal `512` |
@@ -101,7 +101,7 @@ Leaf pages (`page_type = 2`) and Internal pages (`page_type = 3`) use a slotted-
 ## 5. B+ Tree Record Formats Inside Slotted Pages
 
 ### 5.1 Leaf Page (`page_type = 2`)
-- `aux_page_id` in the header holds `next_leaf_page_id` (`0` if this is the rightmost leaf).
+- `aux_page_id` in the header holds `next_leaf_page_id` (`0xFFFFFFFF` if this is the rightmost leaf).
 - Each slot $i$ points to a Leaf Record with length `4 + key_len + val_len`:
 
 | Relative Offset | Size | Type | Field |
@@ -132,5 +132,5 @@ Leaf pages (`page_type = 2`) and Internal pages (`page_type = 3`) use a slotted-
 
 ### 5.3 Free Page (`page_type = 4`)
 - `num_slots = 0`, `lower_offset = 48`, `upper_offset = 4096`, `fragmented_free_bytes = 0`.
-- `aux_page_id` in the header stores `next_free_page_id` (`0` = end of free list).
+- `aux_page_id` in the header stores `next_free_page_id` (`0xFFFFFFFF` = end of free list).
 - Bytes `0x030..0xFFF` must be all `0x00`.

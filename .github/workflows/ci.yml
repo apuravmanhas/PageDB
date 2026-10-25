@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: GCC 13 (dev)
+            cc: gcc-13
+            cxx: g++-13
+            preset: dev
+          - name: GCC 13 (ASan + UBSan)
+            cc: gcc-13
+            cxx: g++-13
+            preset: asan-ubsan
+          - name: Clang 18 (dev)
+            cc: clang-18
+            cxx: clang++-18
+            preset: dev
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure CMake
+        env:
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
+        run: cmake --preset ${{ matrix.preset }}
+
+      - name: Build
+        run: cmake --build --preset ${{ matrix.preset }} -j $(nproc)
+
+      - name: Run CTest
+        run: ctest --preset ${{ matrix.preset }}

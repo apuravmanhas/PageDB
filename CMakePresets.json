@@ -1,0 +1,86 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 22,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "dev",
+      "displayName": "Developer Debug Build",
+      "description": "C++20 Debug build with strict warnings and CTest enabled",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/build/dev",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "PAGEDB_BUILD_TESTS": "ON",
+        "PAGEDB_ENABLE_WERROR": "ON",
+        "PAGEDB_ENABLE_ASAN_UBSAN": "OFF"
+      }
+    },
+    {
+      "name": "asan-ubsan",
+      "displayName": "ASan + UBSan Build",
+      "description": "Debug build instrumented with AddressSanitizer and UndefinedBehaviorSanitizer",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/build/asan-ubsan",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "PAGEDB_BUILD_TESTS": "ON",
+        "PAGEDB_ENABLE_WERROR": "ON",
+        "PAGEDB_ENABLE_ASAN_UBSAN": "ON"
+      }
+    },
+    {
+      "name": "release",
+      "displayName": "Release Build",
+      "description": "Optimized Release build with assertions and tests enabled",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/build/release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "PAGEDB_BUILD_TESTS": "ON",
+        "PAGEDB_ENABLE_WERROR": "ON",
+        "PAGEDB_ENABLE_ASAN_UBSAN": "OFF"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "dev",
+      "configurePreset": "dev"
+    },
+    {
+      "name": "asan-ubsan",
+      "configurePreset": "asan-ubsan"
+    },
+    {
+      "name": "release",
+      "configurePreset": "release"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "dev",
+      "configurePreset": "dev",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "asan-ubsan",
+      "configurePreset": "asan-ubsan",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "release",
+      "configurePreset": "release",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}
