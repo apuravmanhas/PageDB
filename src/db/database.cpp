@@ -401,6 +401,17 @@ Status Database::verify() const {
   if (!s.ok()) {
     return s;
   }
+  if (has_active_transaction_) {
+    return Status::AlreadyOpen("cannot verify while transaction is active");
+  }
+  Status as = allocator_->verify_allocation_state();
+  if (!as.ok()) {
+    return as;
+  }
+  Status bs = pool_->verify_invariants();
+  if (!bs.ok()) {
+    return bs;
+  }
   return tree_->verify();
 }
 
